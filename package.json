@@ -1,10 +1,21 @@
 {
-  "name": "opencode-deepseek-tools",
+  "name": "@hacky.software/opencode-deepseek-tools",
   "version": "0.1.0",
   "description": "OpenCode V2 plugin exposing DeepSeek's Search and Fetch APIs as tools (deepseek_search, deepseek_fetch) and as a websearch provider.",
   "type": "module",
   "license": "MIT",
   "author": "n0k0",
+  "homepage": "https://github.com/N0K0/opencode-deepseek-tools#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/N0K0/opencode-deepseek-tools.git"
+  },
+  "bugs": {
+    "url": "https://github.com/N0K0/opencode-deepseek-tools/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -18,12 +29,14 @@
   },
   "files": [
     "src",
+    "index.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun test && bun run typecheck"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.24"

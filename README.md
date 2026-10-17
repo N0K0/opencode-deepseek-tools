@@ -16,13 +16,13 @@ The websearch provider is selected as the default when a key is available. If yo
 
 ## Install
 
-Add the plugin to `~/.config/opencode/opencode.json`, pointing at the checkout:
+The package is `@hacky.software/opencode-deepseek-tools` on npm. Add it to `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
   "plugins": [
     {
-      "package": "/path/to/deepseek-tools",
+      "package": "@hacky.software/opencode-deepseek-tools",
       "options": {
         "websearchDefault": true
       }
@@ -31,7 +31,9 @@ Add the plugin to `~/.config/opencode/opencode.json`, pointing at the checkout:
 }
 ```
 
-Then reload the location or restart OpenCode. If DeepSeek is connected in OpenCode, that is the only setup step.
+Or run `opencode plugin add @hacky.software/opencode-deepseek-tools` and add the options by hand.
+
+When working from a checkout, point `package` at the directory instead. Then reload the location or restart OpenCode. If DeepSeek is connected in OpenCode, that is the only setup step.
 
 If you would rather use an environment variable, set `DEEPSEEK_API_KEY` before OpenCode starts. The plugin checks these sources, in order:
 
