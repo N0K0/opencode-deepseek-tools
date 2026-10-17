@@ -61,4 +61,16 @@ jobs:
             echo "Publishing with GitHub OIDC trusted publishing."
           fi
 
-      - run: npm publish
+      - name: Check whether this version is already published
+        id: version
+        run: |
+          VERSION=$(bun -e 'console.log(require("./package.json").version)')
+          if npm view "@hacky.software/opencode-deepseek-tools@$VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version $VERSION is already on the registry; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.version.outputs.exists != 'true'
+        run: npm publish

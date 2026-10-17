@@ -35,7 +35,7 @@ The package is `@hacky.software/opencode-deepseek-tools` on npm. Add it to `~/.c
 
 Or run `opencode plugin add @hacky.software/opencode-deepseek-tools` and add the options by hand.
 
-If the npm release is not available yet, or you are working from a checkout, point `package` at the directory instead. Then reload the location or restart OpenCode. If DeepSeek is connected in OpenCode, that is the only setup step.
+If you are working from a checkout, point `package` at the directory instead. Then reload the location or restart OpenCode. If DeepSeek is connected in OpenCode, that is the only setup step.
 
 If you would rather use an environment variable, set `DEEPSEEK_API_KEY` before OpenCode starts. The plugin checks these sources, in order:
 
@@ -116,13 +116,9 @@ DeepSeek bills per successful request: $0.75 per 1,000 searches and $0.75 per 1,
 
 Pushing a `v*` tag, or running the workflow manually, publishes through `.github/workflows/publish.yml`.
 
-npm requires a package to already exist before a trusted publisher can be attached, so the very first release is bootstrapped with a token:
+The first release was published interactively with `npm login --auth-type=web` and the package is now linked to this repository's `publish.yml` through an npm trusted publisher. Later tag releases authenticate via GitHub OIDC with no token.
 
-1. Create a granular access token with read/write access to the `@hacky.software` scope and bypass 2FA enabled, then add it as the `NPM_TOKEN` repository secret.
-2. Run the publish workflow (`gh workflow run publish.yml`).
-3. Configure the trusted publisher for this repository and `publish.yml`, then delete the `NPM_TOKEN` secret.
-
-After that, releases use OIDC trusted publishing and need no token. The workflow checks that the tag matches `package.json` before publishing.
+To bootstrap another new package, either publish it once interactively or add a granular access token as the `NPM_TOKEN` secret. The workflow uses that secret when it is present; delete it after configuring the trusted publisher. The workflow checks that the tag matches `package.json` and skips versions that are already on the registry.
 
 ## Development
 
