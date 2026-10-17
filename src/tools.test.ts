@@ -1,7 +1,14 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { formatFetchResult, formatSearchResults, truncateText } from "./format"
 import { parseOptions } from "./options"
 import { parseFetchInput, parseSearchInput } from "./tools"
+import { toWebsearchResult } from "./websearch"
+
+// Keep test warnings out of the real plugin log.
+process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "deepseek-tools-test-"))
 
 describe("formatSearchResults", () => {
   test("renders titles, links, metadata, summary and content", () => {
@@ -57,9 +64,11 @@ describe("formatSearchResults", () => {
 
 describe("formatFetchResult", () => {
   test("renders a page", () => {
-    expect(formatFetchResult({ title: "Example", content: "Body" }, "https://example.com")).toBe(
-      "# Example\n\nSource: https://example.com\n\nBody",
-    )
+    const text = formatFetchResult({ title: "Example", content: "Body" }, "https://example.com")
+    expect(text).toContain("# Example")
+    expect(text).toContain("Source: https://example.com")
+    expect(text).toContain("untrusted web content")
+    expect(text).toContain("Body")
   })
 
   test("handles missing title and content", () => {
@@ -73,6 +82,11 @@ describe("truncateText", () => {
   test("leaves short text alone and marks long text", () => {
     expect(truncateText("abc", 10)).toBe("abc")
     expect(truncateText("abcdef", 3)).toBe("abc\n… [truncated 3 characters]")
+  })
+
+  test("never splits a surrogate pair", () => {
+    expect(truncateText("🚀🚀", 1)).toBe("🚀\n… [truncated 1 character]")
+    expect(truncateText("a😀b", 2)).toBe("a😀\n… [truncated 1 character]")
   })
 })
 
@@ -96,10 +110,18 @@ describe("input parsing", () => {
     expect(input.localization).toBe("1.2.3.4")
   })
 
+  test("treats null optional fields as not provided", () => {
+    const input = parseSearchInput({ query: "q", ori_question: null, localization: null, need_content: null })
+    expect(input.oriQuestion).toBeUndefined()
+    expect(input.localization).toBeUndefined()
+    expect(input.needContent).toBe(false)
+  })
+
   test("rejects a missing query and a bad fetch URL", () => {
     expect(() => parseSearchInput({})).toThrow()
     expect(() => parseFetchInput({ url: "ftp://x" })).toThrow()
-    expect(parseFetchInput({ url: "https://x.test" })).toBe("https://x.test")
+    expect(parseFetchInput({ url: "https://x.test" })).toBe("https://x.test/")
+    expect(() => parseSearchInput({ query: "q", localization: "not-an-ip" })).toThrow()
   })
 })
 
@@ -128,5 +150,74 @@ describe("parseOptions", () => {
 
     expect(parseOptions({ searchCount: 999 }).searchCount).toBe(10)
     expect(parseOptions({ timeoutMs: "soon" }).timeoutMs).toBe(30_000)
+  })
+
+  test("rejects an invalid or insecure baseURL", () => {
+    expect(parseOptions({ baseURL: "not a url" }).baseURL).toBe("https://api.deepseek.com")
+    expect(parseOptions({ baseURL: "http://example.com" }).baseURL).toBe("https://api.deepseek.com")
+    expect(parseOptions({ baseURL: "http://127.0.0.1:8080" }).baseURL).toBe("http://127.0.0.1:8080")
+  })
+
+  test("never logs or accepts a malformed apiKey template", () => {
+    expect(parseOptions({ apiKey: "{env:}" }).apiKey).toBeUndefined()
+    expect(parseOptions({ apiKey: "{env:NAME}" }).apiKey).toBe("{env:NAME}")
+  })
+
+  test("includes the output-size defaults", () => {
+    expect(parseOptions(undefined)).toMatchObject({
+      maxSummaryChars: 4_000,
+      maxFetchChars: 50_000,
+      maxOutputChars: 120_000,
+    })
+  })
+})
+
+describe("format caps", () => {
+  test("caps summaries and the total output", () => {
+    const text = formatSearchResults(
+      "q",
+      [{ title: "T", url: "https://e.com", summary: "s".repeat(5_000) }],
+      { maxSummaryChars: 100, maxOutputChars: 1_000 },
+    )
+    expect(text).toContain("truncated")
+    expect(text.length).toBeLessThan(1_200)
+  })
+
+  test("caps fetched pages", () => {
+    const text = formatFetchResult({ title: "T", content: "x".repeat(100) }, "https://e.com", { maxChars: 10 })
+    expect(text).toContain("truncated 90 characters")
+  })
+})
+
+describe("websearch mapping", () => {
+  test("prefers page content when requested", () => {
+    const mapped = toWebsearchResult(
+      { title: "T", url: "https://e.com", summary: "summary", content: "c".repeat(50) },
+      { websearchNeedContent: true, maxContentChars: 10, maxSummaryChars: 2_000 },
+    )
+    expect(mapped?.content).toContain("truncated")
+    expect(mapped?.content?.startsWith("c")).toBe(true)
+  })
+
+  test("prefers the summary when content was not requested", () => {
+    const mapped = toWebsearchResult(
+      { title: "T", url: "https://e.com", summary: "summary", content: "page" },
+      { websearchNeedContent: false, maxContentChars: 10, maxSummaryChars: 2_000 },
+    )
+    expect(mapped?.content).toBe("summary")
+  })
+
+  test("drops entries without a URL and handles bad dates", () => {
+    const mapped = toWebsearchResult(
+      { title: "T", url: "", summary: "s", date: "not-a-date" },
+      { websearchNeedContent: false, maxContentChars: 10, maxSummaryChars: 2_000 },
+    )
+    expect(mapped).toBeUndefined()
+
+    const dated = toWebsearchResult(
+      { title: "T", url: "https://e.com", date: "not-a-date" },
+      { websearchNeedContent: false, maxContentChars: 10, maxSummaryChars: 2_000 },
+    )
+    expect(dated?.time).toEqual({})
   })
 })

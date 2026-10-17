@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import {
   createClient,
   normalizeCount,
+  parseFetchResponse,
+  parseSearchResponse,
   resolveApiKey,
   validateQuery,
   validateUrl,
@@ -45,15 +47,35 @@ describe("resolveApiKey", () => {
     expect(resolveApiKey({})).toBeUndefined()
   })
 
-  test("falls back to an integration key after env sources", () => {
-    delete process.env.DEEPSEEK_API_KEY
-    expect(resolveApiKey({ integrationKey: "integration-key" })).toBe("integration-key")
+  test("ignores a malformed env template instead of sending it as a key", () => {
     process.env.DEEPSEEK_API_KEY = "env-key"
-    expect(resolveApiKey({ integrationKey: "integration-key" })).toBe("env-key")
+    expect(resolveApiKey({ apiKey: "{env:}" })).toBe("env-key")
+    delete process.env.DEEPSEEK_API_KEY
+    expect(resolveApiKey({ apiKey: "{env:}" })).toBeUndefined()
   })
 })
 
 describe("validation", () => {
+  test("rejects malformed search payloads", () => {
+    expect(() => parseSearchResponse(null)).toThrow(/invalid search response/)
+    expect(() => parseSearchResponse({})).toThrow(/results array/)
+    expect(() => parseSearchResponse({ results: "nope" })).toThrow(/results array/)
+    expect(() => parseSearchResponse({ results: [null] })).toThrow(/usable URL/)
+  })
+
+  test("normalizes partial search results", () => {
+    const [result] = parseSearchResponse({
+      results: [{ title: 42, url: "https://e.com", authority: 3.7, date: null }, { url: "" }],
+    })
+    expect(result).toEqual({ title: "", url: "https://e.com", authority: 3 })
+  })
+
+  test("rejects malformed fetch payloads", () => {
+    expect(() => parseFetchResponse(null)).toThrow(/invalid fetch response/)
+    expect(() => parseFetchResponse({})).toThrow(/missing content/)
+    expect(parseFetchResponse({ content: "" })).toEqual({ title: "", content: "" })
+  })
+
   test("rejects empty, whitespace and overlong queries", () => {
     expect(() => validateQuery("")).toThrow()
     expect(() => validateQuery("   ")).toThrow()
@@ -66,10 +88,13 @@ describe("validation", () => {
     expect(() => validateQuery("🚀".repeat(129))).toThrow()
   })
 
-  test("validates URLs", () => {
+  test("validates and normalizes URLs", () => {
     expect(validateUrl("https://example.com/a")).toBe("https://example.com/a")
+    expect(validateUrl(" https://example.com ")).toBe("https://example.com/")
+    expect(validateUrl("https://example.com/a b")).toBe("https://example.com/a%20b")
     expect(() => validateUrl("ftp://example.com")).toThrow()
     expect(() => validateUrl("https://user:pass@example.com")).toThrow()
+    expect(() => validateUrl("https://example.com/a\nfake")).toThrow()
     expect(() => validateUrl("not a url")).toThrow()
   })
 
@@ -131,7 +156,7 @@ describe("search", () => {
   test("fails clearly without an API key", async () => {
     delete process.env.DEEPSEEK_API_KEY
     const client = createClient({ fetchImpl: async () => json({}) })
-    expect(client.hasApiKey()).toBe(false)
+    expect(await client.hasApiKey()).toBe(false)
     await expect(client.search({ query: "x" })).rejects.toThrow(/DEEPSEEK_API_KEY/)
   })
 
@@ -167,6 +192,84 @@ describe("search", () => {
       fetchImpl: async () => json({ error: { message: "'count' must be between 1 and 50" } }, 400),
     })
     await expect(client.search({ query: "x" })).rejects.toThrow(/'count' must be between 1 and 50/)
+  })
+
+  test("retries 5xx responses", async () => {
+    let attempts = 0
+    const client = createClient({
+      maxRetries: 1,
+      fetchImpl: async () => {
+        attempts++
+        if (attempts === 1) return json({ error: { message: "boom" } }, 500, { "retry-after": "0" })
+        return json({ results: [] })
+      },
+    })
+    expect(await client.search({ query: "x" })).toEqual([])
+    expect(attempts).toBe(2)
+  })
+
+  test("times out while reading a stalled response body", async () => {
+    const client = createClient({
+      timeoutMs: 50,
+      maxRetries: 0,
+      fetchImpl: async () => new Response(new ReadableStream({ start() {} }), { status: 200 }),
+    })
+    const started = Date.now()
+    await expect(client.search({ query: "x" })).rejects.toThrow(/timed out/)
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  test("aborts during a retry delay", async () => {
+    const controller = new AbortController()
+    let attempts = 0
+    const client = createClient({
+      maxRetries: 3,
+      fetchImpl: async () => {
+        attempts++
+        return json({ error: { message: "slow down" } }, 429)
+      },
+    })
+    const promise = client.search({ query: "x" }, controller.signal)
+    await Bun.sleep(50)
+    controller.abort(new Error("stop"))
+    await expect(promise).rejects.toThrow("stop")
+    expect(attempts).toBe(1)
+  })
+
+  test("sanitizes non-finite retry options", async () => {
+    let attempts = 0
+    const client = createClient({
+      maxRetries: Number.NaN,
+      fetchImpl: async () => {
+        attempts++
+        return json({ error: { message: "boom" } }, 500, { "retry-after": "0" })
+      },
+    })
+    await expect(client.search({ query: "x" })).rejects.toThrow(/server error/)
+    expect(attempts).toBe(3)
+  })
+
+  test("resolves the integration key lazily per request", async () => {
+    delete process.env.DEEPSEEK_API_KEY
+    let key = "first"
+    const headers: string[] = []
+    const client = createClient({
+      getApiKey: async () => key,
+      fetchImpl: async (_url, init) => {
+        headers.push((init?.headers as Record<string, string>)?.Authorization ?? "")
+        return json({ results: [] })
+      },
+    })
+    await client.search({ query: "x" })
+    key = "second"
+    await client.search({ query: "x" })
+    expect(headers).toEqual(["Bearer first", "Bearer second"])
+    expect(await client.hasApiKey()).toBe(true)
+  })
+
+  test("rejects an invalid or insecure base URL", () => {
+    expect(() => createClient({ baseURL: "not a url" })).toThrow(/absolute URL/)
+    expect(() => createClient({ baseURL: "http://example.com" })).toThrow(/https/)
   })
 })
 

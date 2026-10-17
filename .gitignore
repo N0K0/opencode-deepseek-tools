@@ -1,2 +1,7 @@
 node_modules/
 tsconfig.tsbuildinfo
+.env
+.env.*
+.npmrc
+*.log
+.DS_Store

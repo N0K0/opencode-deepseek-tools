@@ -4,7 +4,7 @@
 // plugin runtime, `console.error` reaches stderr (visible when running
 // standalone), and the detached background service is only greppable through a
 // file. Mirror both so `[deepseek-tools]` lines are always findable.
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs"
+import { appendFileSync, chmodSync, mkdirSync, renameSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -17,7 +17,7 @@ function targetFile(): string | undefined {
   try {
     const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share")
     const dir = join(dataHome, "opencode", "log")
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
     cached = join(dir, "deepseek-tools.log")
   } catch {
     cached = ""
@@ -49,7 +49,8 @@ export function log(...args: unknown[]): void {
   if (!file) return
   try {
     rotate(file)
-    appendFileSync(file, `${line}\n`)
+    appendFileSync(file, `${line}\n`, { mode: 0o600 })
+    chmodSync(file, 0o600)
   } catch {
     // never let logging break the plugin
   }

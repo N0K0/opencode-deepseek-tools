@@ -10,8 +10,11 @@
 // when an API key is available so the built-in `websearch` tool works without
 // configuring Exa/Tavily/etc.
 //
-// Authentication: `DEEPSEEK_API_KEY` (or the `apiKeyEnv` option), or a literal
-// `apiKey` / `{env:NAME}` plugin option. No key is ever written to the config.
+// Authentication: a literal `apiKey` / `{env:NAME}` option, `DEEPSEEK_API_KEY`
+// (or `apiKeyEnv`), or the active credential for OpenCode's `deepseek`
+// integration. The integration key is read per request, so a rotated key does
+// not require a restart. No key is ever written to the config.
+import { basename } from "node:path"
 import { Plugin } from "@opencode/plugin"
 import { clientFromOptions, errorMessage, resolveApiKey, type DeepSeekClient } from "./client"
 import { log } from "./log"
@@ -26,7 +29,10 @@ let instanceSeq = 0
  * (`/connect` → DeepSeek) so the secret does not need to be duplicated in
  * `opencode.json` or the environment.
  */
-async function storedDeepSeekKey(ctx: Plugin.Context, logLine: (...args: unknown[]) => void): Promise<string | undefined> {
+async function storedDeepSeekKey(
+  ctx: Plugin.Context,
+  logLine: (...args: unknown[]) => void,
+): Promise<string | undefined> {
   try {
     const connection = await ctx.integration.connection.active("deepseek")
     if (!connection) return undefined
@@ -44,24 +50,32 @@ export default Plugin.define({
   id: "deepseek-tools",
   async setup(ctx) {
     const options = parseOptions(ctx.options)
-    const tag = `#${++instanceSeq}`
+    const tag = `${basename(ctx.location.directory)}#${++instanceSeq}@${Math.random().toString(36).slice(2, 6)}`
     const instanceLog = (...args: unknown[]) => log(`(${tag})`, ...args)
 
-    const storedKey = await storedDeepSeekKey(ctx, instanceLog)
-    const client: DeepSeekClient = clientFromOptions(options, instanceLog, storedKey)
-    const hasKey = client.hasApiKey()
-    const envKey = resolveApiKey({ apiKeyEnv: options.apiKeyEnv })
-    const keySource = options.apiKey
-      ? "plugin option"
-      : envKey
-        ? `env ${options.apiKeyEnv}`
-        : storedKey
-          ? 'OpenCode credential "deepseek"'
-          : undefined
+    const staticKey = resolveApiKey({ apiKey: options.apiKey, apiKeyEnv: options.apiKeyEnv })
+    const getApiKey = async (): Promise<string | undefined> =>
+      staticKey ?? (await storedDeepSeekKey(ctx, instanceLog))
+    const client: DeepSeekClient = clientFromOptions(options, instanceLog, getApiKey)
+    const hasKey = await client.hasApiKey()
+    const keySource = staticKey
+      ? options.apiKey
+        ? "plugin option"
+        : `env ${options.apiKeyEnv}`
+      : hasKey
+        ? 'OpenCode credential "deepseek"'
+        : undefined
+
+    let baseOrigin = options.baseURL
+    try {
+      baseOrigin = new URL(options.baseURL).origin
+    } catch {
+      // parseOptions already validated this, but logging must never throw
+    }
 
     instanceLog(`setup — OpenCode ${ctx.app.version} · location=${ctx.location.directory}`)
     instanceLog(
-      `options: baseURL=${options.baseURL} · key=${keySource ?? "MISSING"} · ` +
+      `options: baseURL=${baseOrigin} · key=${keySource ?? "MISSING"} · ` +
         `searchCount=${options.searchCount} · websearchDefault=${options.websearchDefault}`,
     )
     if (!hasKey) {
@@ -78,6 +92,9 @@ export default Plugin.define({
       tools = await registerTools(ctx, { client, options, log: instanceLog })
       instanceLog("registered tools: deepseek_search, deepseek_fetch")
       const registered = (await ctx.tool.list()).filter((tool) => tool.id.startsWith("deepseek_"))
+      if (registered.length !== 2) {
+        instanceLog(`warning: expected 2 deepseek tools, found ${registered.length}`)
+      }
       instanceLog(
         `tool registry: ${registered
           .map(
@@ -91,11 +108,23 @@ export default Plugin.define({
       instanceLog(`tool registration failed: ${errorMessage(error)}`)
     }
 
-    try {
-      websearch = await registerWebsearch(ctx, client, options, instanceLog)
-      instanceLog('registered websearch provider "deepseek"')
-    } catch (error) {
-      instanceLog(`websearch registration failed: ${errorMessage(error)}`)
+    if (!hasKey) {
+      instanceLog(
+        "websearch provider not registered because no API key is available; " +
+          "connect DeepSeek or set DEEPSEEK_API_KEY and reload",
+      )
+    } else {
+      try {
+        websearch = await registerWebsearch(ctx, client, options, true, instanceLog)
+        const providers = await ctx.websearch.providers()
+        instanceLog(
+          providers.data.some((provider) => provider.id === "deepseek")
+            ? 'registered websearch provider "deepseek"'
+            : 'websearch provider registration did not take effect',
+        )
+      } catch (error) {
+        instanceLog(`websearch registration failed: ${errorMessage(error)}`)
+      }
     }
 
     let cleaned = false
@@ -104,7 +133,9 @@ export default Plugin.define({
       cleaned = true
       instanceLog("cleanup")
       if (tools) await tools.dispose().catch((error) => instanceLog(`tool dispose failed: ${errorMessage(error)}`))
-      if (websearch) await websearch.dispose().catch((error) => instanceLog(`websearch dispose failed: ${errorMessage(error)}`))
+      if (websearch) {
+        await websearch.dispose().catch((error) => instanceLog(`websearch dispose failed: ${errorMessage(error)}`))
+      }
       instanceLog("unloaded")
     }
   },

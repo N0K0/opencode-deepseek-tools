@@ -42,7 +42,7 @@
     "@opencode/plugin": "2.0.24"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "latest"
+    "@types/bun": "1.4.3",
+    "typescript": "7.0.2"
   }
 }

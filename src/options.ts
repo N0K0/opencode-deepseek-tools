@@ -2,6 +2,7 @@
 //
 // Field-by-field parsing of `ctx.options`; invalid values fall back to the
 // default with a warning so a typo never breaks loading.
+import { errorMessage, normalizeBaseURL } from "./client"
 import { log } from "./log"
 
 export type Options = {
@@ -11,7 +12,7 @@ export type Options = {
   apiKeyEnv: string
   /** API base URL. Default `https://api.deepseek.com`. */
   baseURL: string
-  /** Per-request timeout. Default 30 s. */
+  /** Per-request timeout, including response-body reads. Default 30 s. */
   timeoutMs: number
   /** Retries for 408/429/5xx and network errors. Default 2. */
   maxRetries: number
@@ -19,8 +20,14 @@ export type Options = {
   searchCount: number
   /** Default `need_content` for `deepseek_search`. Default false. */
   searchNeedContent: boolean
-  /** Per-result content cap in tool output. Default 20 000 chars. */
+  /** Per-result content cap in search output. Default 20 000 chars. */
   maxContentChars: number
+  /** Cap for each result's summary. Default 4 000 chars. */
+  maxSummaryChars: number
+  /** Cap for one fetched page. Default 50 000 chars. */
+  maxFetchChars: number
+  /** Total cap for a search tool result. Default 120 000 chars. */
+  maxOutputChars: number
   /** Make DeepSeek the default websearch provider when a key is available. Default true. */
   websearchDefault: boolean
   /** `count` used by the built-in websearch provider. Default 10. */
@@ -37,6 +44,9 @@ export const DEFAULTS: Options = {
   searchCount: 10,
   searchNeedContent: false,
   maxContentChars: 20_000,
+  maxSummaryChars: 4_000,
+  maxFetchChars: 50_000,
+  maxOutputChars: 120_000,
   websearchDefault: true,
   websearchCount: 10,
   websearchNeedContent: false,
@@ -52,7 +62,7 @@ function readNumber(
   const raw = input[key]
   if (raw === undefined) return
   if (typeof raw === "number" && Number.isFinite(raw) && raw >= min && raw <= max) {
-    apply(raw)
+    apply(Math.trunc(raw))
     return
   }
   log(`options: invalid "${key}" (${JSON.stringify(raw)}) — using default ${String(DEFAULTS[key])}`)
@@ -78,18 +88,52 @@ function readString(input: Record<string, unknown>, key: keyof Options, apply: (
   log(`options: invalid "${key}" (${JSON.stringify(raw)}) — using default ${String(DEFAULTS[key])}`)
 }
 
+/** Never log the value of `apiKey`; it may be a real secret. */
+function readApiKey(input: Record<string, unknown>, apply: (value: string) => void): void {
+  const raw = input.apiKey
+  if (raw === undefined) return
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const value = raw.trim()
+    if (value.startsWith("{env:") && !/^\{env:[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) {
+      log('options: "apiKey" looks like a malformed {env:NAME} template — ignoring it')
+      return
+    }
+    apply(value)
+    return
+  }
+  log('options: invalid "apiKey" — ignoring it')
+}
+
+/** Reject non-HTTPS base URLs (except loopback) so the bearer token stays encrypted. */
+function readBaseURL(input: Record<string, unknown>, apply: (value: string) => void): void {
+  const raw = input.baseURL
+  if (raw === undefined) return
+  if (typeof raw !== "string" || raw.trim() === "") {
+    log(`options: invalid "baseURL" — using default ${DEFAULTS.baseURL}`)
+    return
+  }
+  try {
+    apply(normalizeBaseURL(raw))
+  } catch (error) {
+    log(`options: invalid "baseURL" (${errorMessage(error)}) — using default ${DEFAULTS.baseURL}`)
+  }
+}
+
 export function parseOptions(raw: unknown): Options {
   const options: Options = { ...DEFAULTS }
   const input = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
 
-  readString(input, "apiKey", (value) => (options.apiKey = value))
+  readApiKey(input, (value) => (options.apiKey = value))
   readString(input, "apiKeyEnv", (value) => (options.apiKeyEnv = value))
-  readString(input, "baseURL", (value) => (options.baseURL = value.replace(/\/+$/, "")))
-  readNumber(input, "timeoutMs", 1_000, 120_000, (value) => (options.timeoutMs = Math.trunc(value)))
-  readNumber(input, "maxRetries", 0, 5, (value) => (options.maxRetries = Math.trunc(value)))
-  readNumber(input, "searchCount", 1, 50, (value) => (options.searchCount = Math.trunc(value)))
-  readNumber(input, "maxContentChars", 1_000, 200_000, (value) => (options.maxContentChars = Math.trunc(value)))
-  readNumber(input, "websearchCount", 1, 50, (value) => (options.websearchCount = Math.trunc(value)))
+  readBaseURL(input, (value) => (options.baseURL = value))
+  readNumber(input, "timeoutMs", 1_000, 120_000, (value) => (options.timeoutMs = value))
+  readNumber(input, "maxRetries", 0, 5, (value) => (options.maxRetries = value))
+  readNumber(input, "searchCount", 1, 50, (value) => (options.searchCount = value))
+  readNumber(input, "maxContentChars", 1_000, 200_000, (value) => (options.maxContentChars = value))
+  readNumber(input, "maxSummaryChars", 100, 50_000, (value) => (options.maxSummaryChars = value))
+  readNumber(input, "maxFetchChars", 1_000, 1_000_000, (value) => (options.maxFetchChars = value))
+  readNumber(input, "maxOutputChars", 1_000, 1_000_000, (value) => (options.maxOutputChars = value))
+  readNumber(input, "websearchCount", 1, 50, (value) => (options.websearchCount = value))
   readBoolean(input, "searchNeedContent", (value) => (options.searchNeedContent = value))
   readBoolean(input, "websearchDefault", (value) => (options.websearchDefault = value))
   readBoolean(input, "websearchNeedContent", (value) => (options.websearchNeedContent = value))
