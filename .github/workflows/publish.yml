@@ -36,13 +36,29 @@ jobs:
       - run: bun run typecheck
 
       # npm 11.5.1+ / node >= 22.14 are required for OIDC trusted publishing.
+      # Omit registry-url: it writes an empty _authToken line that prevents
+      # npm from falling back to OIDC.
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      # Authenticates via GitHub OIDC — no token. The package must already
-      # exist and have this repository/workflow configured as a trusted
-      # publisher. Provenance is omitted for private repositories.
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      # First publish only. npm requires a package to already exist before a
+      # trusted publisher can be attached, so the bootstrap release uses the
+      # NPM_TOKEN secret. Remove the secret after configuring the trusted
+      # publisher; when it is absent, npm authenticates via GitHub OIDC.
+      - name: Configure npm authentication
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> "$HOME/.npmrc"
+            echo "Publishing with NPM_TOKEN (first-publish bootstrap)."
+          else
+            echo "Publishing with GitHub OIDC trusted publishing."
+          fi
+
       - run: npm publish

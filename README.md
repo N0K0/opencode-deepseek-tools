@@ -114,9 +114,15 @@ DeepSeek bills per successful request: $0.75 per 1,000 searches and $0.75 per 1,
 
 ## Releasing
 
-Pushing a `v*` tag runs `.github/workflows/publish.yml`, which publishes through npm trusted publishing (OIDC). The first version has to be published once manually, or with a token, because npm requires the package to exist before a trusted publisher can be configured. After that, tag releases work without a token.
+Pushing a `v*` tag, or running the workflow manually, publishes through `.github/workflows/publish.yml`.
 
-The workflow checks that the tag matches `package.json` before publishing.
+npm requires a package to already exist before a trusted publisher can be attached, so the very first release is bootstrapped with a token:
+
+1. Create a granular access token with read/write access to the `@hacky.software` scope and bypass 2FA enabled, then add it as the `NPM_TOKEN` repository secret.
+2. Run the publish workflow (`gh workflow run publish.yml`).
+3. Configure the trusted publisher for this repository and `publish.yml`, then delete the `NPM_TOKEN` secret.
+
+After that, releases use OIDC trusted publishing and need no token. The workflow checks that the tag matches `package.json` before publishing.
 
 ## Development
 
